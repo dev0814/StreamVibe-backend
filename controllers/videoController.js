@@ -249,14 +249,26 @@ exports.getVideos = async (req, res) => {
 
     const videos = await Video.find(query)
       .populate('teacher', 'name email')
+      .populate('comments')
       .sort('-createdAt');
 
-    console.log(`Found ${videos.length} videos`);
+    // Get likes count for each video
+    const videosWithLikes = await Promise.all(
+      videos.map(async (video) => {
+        const likesCount = await Like.countDocuments({ video: video._id });
+        return {
+          ...video.toObject(),
+          likesCount
+        };
+      })
+    );
+
+    console.log(`Found ${videosWithLikes.length} videos`);
 
     res.status(200).json({
       success: true,
-      count: videos.length,
-      data: videos
+      count: videosWithLikes.length,
+      data: videosWithLikes
     });
   } catch (error) {
     console.error('Error in getVideos:', error);
@@ -280,6 +292,9 @@ exports.getVideo = async (req, res) => {
       
     // Also get the likes count
     const likesCount = await Like.countDocuments({ video: req.params.id });
+
+    // Get comments count for this video
+    const commentsCount = await Comment.countDocuments({ video: req.params.id });
 
     if (!video) {
       console.log('Video not found with ID:', req.params.id);
@@ -348,8 +363,9 @@ exports.getVideo = async (req, res) => {
     // Create optimized video URL if it's a Cloudinary URL
     const videoData = video.toObject();
     
-    // Add likes count to the response
-    videoData.likes = likesCount;
+    // Add likes and comments counts to the response
+    videoData.likesCount = likesCount;
+    videoData.commentsCount = commentsCount;
     
     // Check if the current user has liked this video
     if (req.user) {
@@ -378,7 +394,8 @@ exports.getVideo = async (req, res) => {
     console.log('Sending video data with URLs:', {
       originalUrl: videoData.videoUrl,
       optimizedUrl: videoData.optimizedVideoUrl || 'none',
-      likesCount: videoData.likes
+      likesCount: videoData.likesCount,
+      commentsCount: videoData.commentsCount
     });
 
     res.status(200).json({
@@ -950,8 +967,15 @@ exports.unlikeVideo = async (req, res) => {
 // @access  Private
 exports.addComment = async (req, res) => {
   try {
-    const { text } = req.body;
+    const { content } = req.body;
     
+    if (!content) {
+      return res.status(400).json({
+        success: false,
+        error: 'Comment content is required'
+      });
+    }
+
     const video = await Video.findById(req.params.id);
     
     if (!video) {
@@ -960,23 +984,26 @@ exports.addComment = async (req, res) => {
         error: 'Video not found'
       });
     }
+
+    // Create comment using Comment model
+    const comment = await Comment.create({
+      content,
+      video: req.params.id,
+      user: req.user._id
+    });
+
+    // Populate user information
+    await comment.populate('user', 'name profilePicture role');
     
-    const comment = {
-      text,
-      user: req.user.id
-    };
-    
-    video.comments.unshift(comment);
-    await video.save();
-    
-    res.status(200).json({
+    res.status(201).json({
       success: true,
-      data: video
+      data: comment
     });
   } catch (error) {
+    console.error('Error in addComment:', error);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message || 'Error adding comment'
     });
   }
 };
